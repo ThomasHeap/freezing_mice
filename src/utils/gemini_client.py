@@ -1,7 +1,7 @@
 from google import genai
 from google.genai.types import GenerateContentConfig, Part
 from ..config.prompts import PROMPTS
-from ..models.mouse_behavior import MouseBehaviorSegment, ScratchAidSegment
+from ..models.mouse_behavior import MouseBehaviorSegment, ScratchAidSegment, GroomingSegment, MouseBoxSegment
 import json
 
 # Gemini config
@@ -16,7 +16,8 @@ def get_config(schema):
 
 
 
-def get_gemini_response(video_data, annotation_summary, start_segment, project, location, model_id, prompt_template="default", full_example=None, full_example_video=None):
+def get_gemini_response(video_uri, annotation_summary, start_segment, project, location, model_id, prompt_template="default", 
+                        full_example=None, full_example_video=None, example_clips=None):
     """
     Get response from Gemini model
     
@@ -45,21 +46,31 @@ def get_gemini_response(video_data, annotation_summary, start_segment, project, 
         # Add full example video and annotations if provided
         if full_example and full_example_video:
             content_parts.extend([
-                "Here is an example video:",
-                Part.from_bytes(data=full_example_video, mime_type="video/mp4"),
-                "And its annotations:",
+                Part.from_uri(file_uri=full_example_video, mime_type="video/mp4"),
+                "Here is an example video and its annotations:",
                 Part.from_text(text=json.dumps(full_example, indent=2)),
-                "\nNow, here is the video you need to analyze:",
+                
             ])
+            
+        # Add examples of the behavior if provided
+        if example_clips:
+            content_parts.append("Here are example clips for each behavior:")
+            for behavior, clips in example_clips.items():
+                content_parts.append(f"Behavior: {behavior}")
+                for clip in clips:
+                    content_parts.extend([
+                        Part.from_bytes(data=clip, mime_type="video/mp4"),
+                    ])
+        
         
         # Add the main video and its annotations
         content_parts.extend([
-            Part.from_bytes(data=video_data, mime_type="video/mp4"),
+            Part.from_uri(file_uri=video_uri, mime_type="video/mp4"),
             Part.from_text(text=PROMPTS[prompt_template]),
         ])
         
         # Add the current video's segments
-        if start_segment > 0:
+        if start_segment > 0 and annotation_summary is not None:
             if full_example and full_example_video:
                 content_parts.append("\nHere are the first few segments from the current video for reference:")
             else:
@@ -72,8 +83,14 @@ def get_gemini_response(video_data, annotation_summary, start_segment, project, 
         
         if prompt_template == "scratch_aid":
             schema = list[ScratchAidSegment]
-        else:
+        elif prompt_template == "grooming":
+            schema = list[GroomingSegment]
+        elif prompt_template == "calms":
             schema = list[MouseBehaviorSegment]
+        elif prompt_template == "mouse_box":
+            schema = list[MouseBoxSegment]
+        else:
+            raise ValueError(f"Invalid prompt template: {prompt_template}")
             
         response = client.models.generate_content(
             model=model_id,

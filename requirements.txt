@@ -1,3 +1,4 @@
 google-genai
 pydantic
-moviepy 
+moviepy
+pandas 
