@@ -1,7 +1,7 @@
 from google import genai
 from google.genai.types import GenerateContentConfig, Part
 from ..config.prompts import PROMPTS
-from ..models.mouse_behavior import MouseBehaviorSegment, ScratchAidSegment, GroomingSegment, MouseBoxSegment
+from ..models.mouse_behavior import MouseBehaviorSegment, ScratchAidSegment, GroomingSegment, MouseBoxSegment, FreezingSegment, ForagingSegment, MouseVentralSegment
 import json
 
 # Gemini config
@@ -9,7 +9,7 @@ def get_config(schema):
     return GenerateContentConfig(
         temperature=0,
         top_p=1,
-        max_output_tokens=40000,
+        max_output_tokens=65535,
         response_mime_type="application/json",
         response_schema=schema,
     )
@@ -41,16 +41,7 @@ def get_gemini_response(video_uri, annotation_summary, start_segment, project, l
         print(f"Using prompt template: {prompt_template}")
         
         # Prepare the content parts
-        content_parts = []
-        
-        # Add full example video and annotations if provided
-        if full_example and full_example_video:
-            content_parts.extend([
-                Part.from_uri(file_uri=full_example_video, mime_type="video/mp4"),
-                "Here is an example video and its annotations:",
-                Part.from_text(text=json.dumps(full_example, indent=2)),
-                
-            ])
+        content_parts = [Part.from_text(text=PROMPTS[prompt_template]),]
             
         # Add examples of the behavior if provided
         if example_clips:
@@ -58,17 +49,21 @@ def get_gemini_response(video_uri, annotation_summary, start_segment, project, l
             for behavior, clips in example_clips.items():
                 content_parts.append(f"Behavior: {behavior}")
                 for clip in clips:
+                    print(clip)
                     content_parts.extend([
-                        Part.from_bytes(data=clip, mime_type="video/mp4"),
+                        Part.from_uri(file_uri=clip, mime_type="video/mp4"),
                     ])
-        
-        
-        # Add the main video and its annotations
-        content_parts.extend([
-            Part.from_uri(file_uri=video_uri, mime_type="video/mp4"),
-            Part.from_text(text=PROMPTS[prompt_template]),
-        ])
-        
+
+        # Add full example video and annotations if provided
+        if full_example and full_example_video:
+            content_parts.extend([
+                "Here is an example video:",
+                Part.from_uri(file_uri=full_example_video, mime_type="video/mp4"),
+                "and its annotations:",
+                Part.from_text(text=json.dumps(full_example, indent=2)),
+                
+            ])
+            
         # Add the current video's segments
         if start_segment > 0 and annotation_summary is not None:
             if full_example and full_example_video:
@@ -77,6 +72,14 @@ def get_gemini_response(video_uri, annotation_summary, start_segment, project, l
                 content_parts.append(f"Here are the first {start_segment} human-labeled segments for reference:")
             
             content_parts.append(Part.from_text(text=annotation_summary))
+            
+        # Add the main video and its annotations
+        content_parts.extend([
+            "Here is the video to be annotated, only annotate this video, do not annotate other videos:",
+            Part.from_uri(file_uri=video_uri, mime_type="video/mp4"),
+        ])
+        
+
     
         
         print("Sending request to Gemini API...")
@@ -89,6 +92,12 @@ def get_gemini_response(video_uri, annotation_summary, start_segment, project, l
             schema = list[MouseBehaviorSegment]
         elif prompt_template == "mouse_box":
             schema = list[MouseBoxSegment]
+        elif prompt_template == "freezing":
+            schema = list[FreezingSegment]
+        elif prompt_template == "foraging":
+            schema = list[ForagingSegment]
+        elif prompt_template == "mouse_ventral":
+            schema = list[MouseVentralSegment]
         else:
             raise ValueError(f"Invalid prompt template: {prompt_template}")
             

@@ -38,9 +38,9 @@ def analyze_segment_durations(gt_segments: List[Segment], pred_segments: List[Se
         
         stats[behavior] = {
             "gt_mean": np.mean(gt_durs) if gt_durs else 0,
-            "gt_std": np.std(gt_durs) if gt_durs else 0,
+            "gt_std_error": np.std(gt_durs) / np.sqrt(len(gt_durs)-1) if gt_durs else 0,
             "pred_mean": np.mean(pred_durs) if pred_durs else 0,
-            "pred_std": np.std(pred_durs) if pred_durs else 0,
+            "pred_std_error": np.std(pred_durs) / np.sqrt(len(pred_durs)-1) if pred_durs else 0,
             "gt_count": len(gt_durs),
             "pred_count": len(pred_durs),
             "duration_bias": (np.mean(pred_durs) - np.mean(gt_durs)) if (gt_durs and pred_durs) else 0

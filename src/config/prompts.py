@@ -14,14 +14,7 @@ Available behavior labels:
 Important: 
 You must use ONLY the labels listed above. Do not create new labels or modify existing ones.
 
-You will be provided with example clips of each behavior.
-
-Study these examples carefully to understand:
-- How to identify the start and end of each behavior
-- The correct timing and duration of segments
-- The proper application of behavior labels
-
-Start your analysis from the start of the video and continue until the end of the video, including the example segments.
+Start your analysis from the start of the video and continue until the end of the video.
 
 For each segment, provide:
 - segment number (in order)
@@ -50,25 +43,17 @@ Your response must be in JSON format with the following structure:
 
 SCRATCH_AID_PROMPT = """
 You are a Mouse Behavior Labeler specializing in telling when a mouse is scratching.
-The video is of a mouse and is taken from below.
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
 
 Available behavior labels:
-- scratching - when the mouse is scratching
-- not scratching - when the mouse is not scratching
+- scratching - when the mouse is scratching, usually with the hind legs
+- not scratching - when the mouse is not scratching.
 
 Important: 
 You must use ONLY the labels listed above. Do not create new labels or modify existing ones. 
-The mouse grooming is not scratching. Instances of scratching are not all the same length.
 
-You will be provided with example clips of scratching.
 
-Study these examples carefully to understand:
-- How to identify the start and end of scratching behaviors
-- The correct timing and duration of segments
-- The proper application of the scratching label
-- The difference between scratching and other behaviors like grooming
-
-Start your analysis from the start of the video and continue until the end of the video, including the example segments.
+Start your analysis from the start of the video and continue until the end of the video. The video is of a mouse and is taken from below.
 
 For each segment, provide:
 - start and end time in MM:SS format
@@ -106,7 +91,7 @@ You must use ONLY the labels listed above. Do not create new labels or modify ex
 The bedding box is on the top right side of the video.
 The video is taken from above.
 
-Start your analysis from the start of the video and continue until the end of the video, including the example segments.
+Start your analysis from the start of the video and continue until the end of the video.
 
 For each segment, provide:
 - start and end time in MM:SS format
@@ -149,15 +134,125 @@ Grooming behaviors are characterized by:
 - Scratching with hind legs
 - Cleaning of specific body parts
 
-You will be provided with example clips of grooming.
+Start your analysis from the start of the video and continue until the end of the video.
 
-Study these examples carefully to understand:
-- How to identify the start and end of grooming behaviors
-- The correct timing and duration of segments
-- The proper application of the grooming label
-- The difference between grooming and other behaviors
+For each segment, provide:
+- segment number (in order)
+- start and end time in MM:SS format
+- behavior label (must be one of the above labels)
 
-Start your analysis from the start of the video and continue until the end of the video, including the example segments.
+Your response must be in JSON format with the following structure:
+{
+    "segments": [
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        ...
+    ]
+}
+"""
+
+FREEZING_PROMPT = """
+You are a Mouse Behavior Labeler specializing in identifying freezing behaviors in mice.
+The video shows a mouse from above.
+
+Available behavior labels:
+- Freezing - when the mouse is Freezing, i.e characterized by the complete cessation of movement, except for respiratory-related movements so no head twitching for instance.
+- Not Freezing - when the mouse is not Freezing
+
+Important: 
+You must use ONLY the labels listed above. Do not create new labels or modify existing ones.
+
+Start your analysis from the start of the video and continue until the end of the video.
+
+For each segment, provide:
+- segment number (in order)
+- start and end time in MM:SS format
+- behavior label (must be one of the above labels)
+
+Your response must be in JSON format with the following structure:
+{
+    "segments": [
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        {
+            "segment_number": INTEGER,  
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        ...
+    ]
+}
+"""
+
+FORAGING_PROMPT = """
+You are a Mouse Behavior Labeler specializing in identifying foraging behaviors in mice.
+The video the corner of a mouse box, the mouse visits the corner of the mouse box to forage.
+Foraging is characterized by the mouse actively extracting nesting material from the bedding box (the box with multiple holes filled with nesting material).
+
+Available behavior labels:
+- foraging - when the mouse is foraging, i.e. visiting the corner of the mouse box to forage
+- not foraging - when the mouse is not foraging, i.e. not visiting the corner of the mouse box
+
+Important: 
+You must use ONLY the labels listed above. Do not create new labels or modify existing ones.
+
+Start your analysis from the start of the video and continue until the end of the video.
+
+
+For each segment, provide:
+- segment number (in order)
+- start and end time in MM:SS format
+- behavior label (must be one of the above labels)
+
+
+Your response must be in JSON format with the following structure:
+{
+    "segments": [
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        ...
+    ]
+}
+"""
+
+MOUSE_VENTRAL_PROMPT = """
+You are a Mouse Behavior Labeler specializing in identifying ventral behaviors in mice.
+The video shows a mouse from below.
+
+Available behavior labels:
+- background - when the mouse is not licking or scratching
+- scratch - when the mouse is scratching
+- lick - when the mouse is licking
+
+Important: 
+You must use ONLY the labels listed above. Do not create new labels or modify existing ones.
+
+Start your analysis from the start of the video and continue until the end of the video.
 
 For each segment, provide:
 - segment number (in order)
@@ -189,4 +284,7 @@ PROMPTS = {
     "scratch_aid": SCRATCH_AID_PROMPT,
     "mouse_box": MOUSE_BOX_PROMPT,
     "grooming": GROOMING_PROMPT,
+    "freezing": FREEZING_PROMPT,
+    "foraging": FORAGING_PROMPT,
+    "mouse_ventral": MOUSE_VENTRAL_PROMPT,
 } 

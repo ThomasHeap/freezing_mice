@@ -4,451 +4,645 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from collections import defaultdict
-from typing import List, Dict, Tuple, Optional
-import pandas as pd
-from dataclasses import dataclass
+from typing import List, Dict
+from matplotlib.patches import Patch
+# No longer using renewal baseline - using predicted segment proportions instead
 
-# Set up plotting style
 plt.style.use('default')
 sns.set_palette("husl")
 plt.rcParams['figure.figsize'] = (12, 8)
-plt.rcParams['font.size'] = 10
+plt.rcParams['font.size'] = 15
 plt.rcParams['axes.grid'] = True
 plt.rcParams['grid.alpha'] = 0.3
 
+behaviour_colors = {
+    "grooming": "lightcoral",
+    "not_grooming": "red",
+    "mount": "lightblue",
+    "investigation": "lightgreen",
+    "other": "lightgray",
+    "attack": "lightblue",
+    "scratching": "lightpink",
+    "not scratching": "lightgray",
+    "bedding box": "lightpink",
+    "Freezing": "lightcoral",
+    "Not Freezing": "lightgray",
+    "foraging": "lightgreen",
+    "not foraging": "lightgray",
+    "background": "lightgray",
+    "scratch": "lightpink",
+    "lick": "lightblue",
+}
+
+def parse_time_str(time_str):
+    """Parse a time string in 'M:SS' or 'MM:SS' format to seconds (int)."""
+    if isinstance(time_str, (int, float)):
+        return float(time_str)
+    if not isinstance(time_str, str):
+        return 0.0
+    parts = time_str.strip().split(":")
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return int(minutes) * 60 + int(seconds)
+    elif len(parts) == 3:
+        hours, minutes, seconds = parts
+        return int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+    else:
+        try:
+            return float(time_str)
+        except Exception:
+            return 0.0
+
 class ComparativeVisualizer:
-    """Create comparative visualizations across multiple datasets/models."""
+    """Create comparative visualizations across multiple datasets/models (core metrics only)."""
     
     def __init__(self, output_dir: Path):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+        self.dataset_colors = {}
+    
+    def get_dataset_colors(self, datasets: List[str]) -> Dict[str, str]:
+        if self.dataset_colors == {}:
+            colors = sns.color_palette("husl", len(datasets))
+            self.dataset_colors = {dataset: colors[i] for i, dataset in enumerate(sorted(datasets))}
+        return self.dataset_colors
+    
+    def get_dataset_color(self, dataset: str) -> str:
+        return self.dataset_colors[dataset]
+    
     def collect_results(self, results_dir: Path) -> Dict[str, Dict]:
-        """Collect all evaluation results from subdirectories."""
         results = {}
-        
-        # Look for JSON files in subdirectories
         for subdir in results_dir.iterdir():
             if subdir.is_dir():
-                # Look specifically for evaluation_results.json files
-                json_files = list(subdir.glob("evaluation_results.json"))
+                dataset_name = subdir.name
                 
-                for json_file in json_files:
+                # Look for aggregated_results.json files first, then fall back to evaluation_results.json
+                aggregated_file = subdir / "aggregated_results.json"
+                evaluation_file = subdir / "evaluation_results.json"
+                
+                # Prioritize aggregated results over evaluation results
+                json_file = None
+                if aggregated_file.exists():
+                    json_file = aggregated_file
+                elif evaluation_file.exists():
+                    json_file = evaluation_file
+                
+                if json_file:
                     try:
                         with open(json_file, 'r') as f:
                             data = json.load(f)
-                        
-                        # Use the subfolder name as the dataset name
-                        dataset_name = subdir.name
-                        
                         results[dataset_name] = data
                         print(f"✅ Loaded results from: {json_file}")
-                        
                     except Exception as e:
                         print(f"❌ Error loading {json_file}: {e}")
-        
         return results
     
-    def plot_core_metrics_comparison(self, results: Dict[str, Dict]):
-        """Plot comparison of core metrics across datasets."""
-        datasets = list(results.keys())
-        metrics = ['second_accuracy', 'mAP', 'edit_distance']
-        
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        
-        # Second-wise accuracy
-        accuracies = [results[ds].get('second_accuracy', 0) for ds in datasets]
-        bars1 = axes[0].bar(datasets, accuracies, color=sns.color_palette("viridis", len(datasets)))
-        axes[0].set_title('Second-wise Accuracy', fontsize=14, fontweight='bold')
-        axes[0].set_ylabel('Accuracy')
-        axes[0].set_ylim(0, 1)
-        axes[0].tick_params(axis='x', rotation=45)
-        
-        # Add value labels on bars
-        for bar, acc in zip(bars1, accuracies):
-            axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                        f'{acc:.3f}', ha='center', va='bottom', fontweight='bold')
-        
-        # mAP
-        maps = [results[ds].get('mAP', 0) for ds in datasets]
-        bars2 = axes[1].bar(datasets, maps, color=sns.color_palette("plasma", len(datasets)))
-        axes[1].set_title('mean Average Precision (mAP)', fontsize=14, fontweight='bold')
-        axes[1].set_ylabel('mAP')
-        axes[1].set_ylim(0, 1)
-        axes[1].tick_params(axis='x', rotation=45)
-        
-        for bar, map_val in zip(bars2, maps):
-            axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                        f'{map_val:.3f}', ha='center', va='bottom', fontweight='bold')
-        
-        # Edit Distance (lower is better)
-        edit_dists = [results[ds].get('edit_distance', 0) for ds in datasets]
-        bars3 = axes[2].bar(datasets, edit_dists, color=sns.color_palette("rocket", len(datasets)))
-        axes[2].set_title('Edit Distance (Lower = Better)', fontsize=14, fontweight='bold')
-        axes[2].set_ylabel('Edit Distance')
-        axes[2].tick_params(axis='x', rotation=45)
-        
-        for bar, ed in zip(bars3, edit_dists):
-            axes[2].text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(edit_dists)*0.01, 
-                        f'{ed}', ha='center', va='bottom', fontweight='bold')
-        
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'core_metrics_comparison.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'core_metrics_comparison.pdf', bbox_inches='tight')
-        plt.close()
-    
-    def plot_boundary_tolerance_analysis(self, results: Dict[str, Dict]):
-        """Plot boundary detection performance across tolerances for all datasets."""
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
-        
-        tolerances = [0.5, 1.0, 2.0, 3.0]
-        
+    def calculate_chance_performance(self, results: Dict[str, Dict]) -> Dict[str, float]:
+        """Calculate theoretically sound chance performance for all metrics, using predicted segment proportions."""
+        chance_metrics = {}
         for dataset, data in results.items():
-            boundary_data = data.get('boundary_tolerance_analysis', {})
+            chance_metrics[dataset] = {}
             
-            precisions = []
-            recalls = []
-            f1s = []
-            
-            for tol in tolerances:
-                tol_key = f"tolerance_{tol}s"
-                if tol_key in boundary_data:
-                    precisions.append(boundary_data[tol_key]['precision'])
-                    recalls.append(boundary_data[tol_key]['recall'])
-                    f1s.append(boundary_data[tol_key]['f1'])
+            # Check if we have aggregated results with files data
+            if 'files' in data:
+                # Calculate baselines using predicted segment proportions from all files
+                total_pred_durations = {}
+                total_video_duration = 0
+                
+                # Aggregate predicted durations across all files
+                for filename, file_data in data['files'].items():
+                    if 'temporal_coverage' in file_data:
+                        total_video_duration += file_data.get('total_seconds', 0)
+                        
+                        for behavior, coverage in file_data['temporal_coverage'].items():
+                            if behavior not in total_pred_durations:
+                                total_pred_durations[behavior] = 0
+                            total_pred_durations[behavior] += coverage.get('pred_duration', 0)
+                
+                # Calculate class proportions from predicted segments
+                if total_pred_durations and total_video_duration > 0:
+                    class_proportions = []
+                    for behavior, pred_duration in total_pred_durations.items():
+                        if pred_duration > 0:
+                            proportion = pred_duration / total_video_duration
+                            class_proportions.append(proportion)
+                    
+                    if class_proportions:
+                        # Calculate chance performance metrics based on predicted proportions
+                        chance_accuracy = sum(p * p for p in class_proportions)
+                        chance_macro_f1 = np.mean(class_proportions)
+                        chance_mAP = 0
+                        
+                        entropy = 0
+                        
+                        # For MCC, use a simple baseline based on class balance
+                        # MCC baseline is typically around 0 for random classification
+                        chance_mcc = 0.0
+                        
+                        chance_metrics[dataset] = {
+                            'second_accuracy': chance_accuracy,
+                            'macro_f1': chance_macro_f1,
+                            'mAP': chance_mAP,
+                            'mutual_info_gt_vs_pred': entropy,
+                            'MCC': chance_mcc
+                        }
+                        
+                        print(f"✅ Calculated baselines for {dataset} using predicted proportions")
+                        print(f"   Predicted class proportions: {class_proportions}")
+                        print(f"   Chance accuracy: {chance_accuracy:.3f}")
+                        print(f"   Chance macro F1: {chance_macro_f1:.3f}")
+                        print(f"   Chance mAP: {chance_mAP:.3f}")
+                        print(f"   Predicted entropy: {entropy:.3f}")
+                    else:
+                        print(f"⚠️  No valid predicted proportions found for {dataset}")
+                        chance_metrics[dataset] = {
+                            'second_accuracy': 0.0,
+                            'macro_f1': 0.0,
+                            'mAP': 0.0,
+                            'mutual_info_gt_vs_pred': 0.0,
+                            'MCC': 0.0
+                        }
                 else:
-                    precisions.append(0)
-                    recalls.append(0)
-                    f1s.append(0)
-            
-            ax1.plot(tolerances, precisions, marker='o', linewidth=2, markersize=8, label=dataset)
-            ax2.plot(tolerances, recalls, marker='s', linewidth=2, markersize=8, label=dataset)
-            ax3.plot(tolerances, f1s, marker='^', linewidth=2, markersize=8, label=dataset)
-        
-        # Customize plots
-        for i, (ax, metric) in enumerate(zip([ax1, ax2, ax3], ['Precision', 'Recall', 'F1-Score'])):
-            ax.set_xlabel('Temporal Tolerance (seconds)', fontsize=12)
-            ax.set_ylabel(f'Boundary {metric}', fontsize=12)
-            ax.set_title(f'Boundary {metric} vs Tolerance', fontsize=14, fontweight='bold')
-            ax.set_ylim(0, 1)
-            ax.grid(True, alpha=0.3)
-            # Only show legend on the rightmost plot
-            if i == 2:
-                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'boundary_tolerance_analysis.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'boundary_tolerance_analysis.pdf', bbox_inches='tight')
-        plt.close()
+                    print(f"⚠️  No temporal coverage data found for {dataset}")
+                    chance_metrics[dataset] = {
+                        'second_accuracy': 0.0,
+                        'macro_f1': 0.0,
+                        'mAP': 0.0,
+                        'mutual_info_gt_vs_pred': 0.0,
+                        'MCC': 0.0
+                    }
+            else:
+                # Fallback for non-aggregated results
+                print(f"⚠️  No files data found for {dataset}, using fallback baselines")
+                chance_metrics[dataset] = {
+                    'second_accuracy': 0.25,  # Simple fallback for binary classification
+                    'macro_f1': 0.25,
+                    'mAP': 0.25,
+                    'mutual_info_gt_vs_pred': 0.5,
+                    'MCC': 0.0
+                }
+                    
+        return chance_metrics
     
-    def plot_iou_threshold_analysis(self, results: Dict[str, Dict]):
-        """Plot IoU-based metrics across different thresholds."""
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
-        
-        iou_thresholds = [0.3, 0.5, 0.7]
+    def load_user_performance(self, my_version_dir: Path = Path("results/my_version")) -> Dict[str, Dict]:
+        # Return empty dict - no longer loading user performance
+        return {}
+    
+    def calculate_maximum_values(self, results: Dict[str, Dict]) -> Dict[str, Dict[str, float]]:
+        """Calculate maximum possible values for mutual information and MCC for each dataset."""
+        max_values = {}
         
         for dataset, data in results.items():
-            precisions = []
-            recalls = []
-            f1s = []
+            max_values[dataset] = {}
             
-            for threshold in iou_thresholds:
-                precisions.append(data.get(f'iou_{threshold}_precision', 0))
-                recalls.append(data.get(f'iou_{threshold}_recall', 0))
-                f1s.append(data.get(f'iou_{threshold}_f1', 0))
-            
-            ax1.plot(iou_thresholds, precisions, marker='o', linewidth=3, markersize=10, label=dataset)
-            ax2.plot(iou_thresholds, recalls, marker='s', linewidth=3, markersize=10, label=dataset)
-            ax3.plot(iou_thresholds, f1s, marker='^', linewidth=3, markersize=10, label=dataset)
+            # For aggregated results, calculate from individual files
+            if 'files' in data:
+                # Calculate maximum mutual information per file
+                file_max_mi = []
+                
+                for filename, file_data in data['files'].items():
+                    if 'temporal_coverage' in file_data:
+                        # Extract ground truth labels from this file's temporal coverage
+                        file_labels = []
+                        
+                        for behavior, coverage in file_data['temporal_coverage'].items():
+                            gt_duration = coverage.get('gt_duration', 0)
+                            if gt_duration > 0:
+                                # Add labels for each second (simplified approximation)
+                                file_labels.extend([behavior] * int(gt_duration))
+                        
+                        if file_labels:
+                            # Calculate entropy of this file's ground truth labels
+                            from collections import Counter
+                            label_counts = Counter(file_labels)
+                            total_labels = len(file_labels)
+                            
+                            # Calculate entropy H(X) for this file
+                            entropy = 0
+                            for count in label_counts.values():
+                                p = count / total_labels
+                                if p > 0:
+                                    entropy -= p * np.log2(p)
+                            
+                            file_max_mi.append(entropy)
+                        else:
+                            file_max_mi.append(1.0)  # Default max for binary classification
+                    else:
+                        file_max_mi.append(1.0)  # Default max
+                
+                # Use the maximum entropy across all files as the dataset maximum
+                if file_max_mi:
+                    max_values[dataset]['mutual_info_gt_vs_pred'] = max(file_max_mi)
+                else:
+                    max_values[dataset]['mutual_info_gt_vs_pred'] = 1.0
+                
+                # Maximum MCC is always 1.0 (perfect correlation)
+                max_values[dataset]['MCC'] = 1.0
+            else:
+                # Fallback for non-aggregated results
+                max_values[dataset]['mutual_info_gt_vs_pred'] = 1.0
+                max_values[dataset]['MCC'] = 1.0
         
-        # Customize plots
-        for i, (ax, metric) in enumerate(zip([ax1, ax2, ax3], ['Precision', 'Recall', 'F1-Score'])):
-            ax.set_xlabel('IoU Threshold', fontsize=12)
-            ax.set_ylabel(f'Segment {metric}', fontsize=12)
-            ax.set_title(f'Segment {metric} vs IoU Threshold', fontsize=14, fontweight='bold')
-            ax.set_ylim(0, 1)
-            ax.grid(True, alpha=0.3)
-            # Only show legend on the rightmost plot
-            if i == 2:
-                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'iou_threshold_analysis.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'iou_threshold_analysis.pdf', bbox_inches='tight')
-        plt.close()
+        return max_values
     
-    def plot_per_class_performance(self, results: Dict[str, Dict]):
-        """Plot per-class performance comparison."""
-        # Collect all unique behaviors across datasets
-        all_behaviors = set()
-        for data in results.values():
-            if 'per_class_metrics' in data:
-                all_behaviors.update(data['per_class_metrics'].keys())
+    def plot_core_metrics_comparison(self, results: Dict[str, Dict], output_dir: Path, plot_title: str = None):
+        datasets = list(results.keys())
+        print(f"  Plotting datasets: {datasets}")
+        self.get_dataset_colors(datasets)
+        chance_metrics = self.calculate_chance_performance(results)
+        max_values = self.calculate_maximum_values(results)
         
-        all_behaviors = sorted(list(all_behaviors))
+        metrics = [
+            ('second_accuracy', 'Second-wise Accuracy', 0, 1),
+            ('macro_f1', 'Macro F1 (Unweighted)', 0, 1),
+            ('mAP', 'mean Average Precision (mAP)', 0, 1),
+            ('mutual_info_gt_vs_pred', 'Mutual Info (GT vs Pred)', 0, 1),
+            ('MCC', 'Matthew\'s Correlation Coefficient (MCC)', -1, 1),
+        ]
         
-        if not all_behaviors:
-            print("No per-class metrics found for visualization")
-            return
-        
-        # Create subplots for each metric
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        # Create figure for aggregate plots
+        fig, axes = plt.subplots(1, 5, figsize=(28, 12))
         axes = axes.flatten()
         
-        metrics = ['precision', 'recall', 'f1', 'support']
-        metric_titles = ['Precision', 'Recall', 'F1-Score', 'Support (# instances)']
-        
-        for idx, (metric, title) in enumerate(zip(metrics, metric_titles)):
+        for idx, (metric_key, title, y_min, y_max) in enumerate(metrics):
             ax = axes[idx]
             
-            # Prepare data for grouped bar chart
-            x = np.arange(len(all_behaviors))
-            width = 0.8 / len(results)
+            # Use pre-calculated means and std_errors from aggregated results
+            values = []
+            error_bars = []
             
-            for i, (dataset, data) in enumerate(results.items()):
-                values = []
-                for behavior in all_behaviors:
-                    class_data = data.get('per_class_metrics', {}).get(behavior, {})
-                    values.append(class_data.get(metric, 0))
+            # Check if we have aggregated results with summary statistics
+            if 'summary' in results[datasets[0]] and any('_mean' in key for key in results[datasets[0]]['summary'].keys()):
+                # Use pre-calculated aggregated results
+                for dataset in datasets:
+                    mean_key = f'{metric_key}_mean'
+                    std_error_key = f'{metric_key}_std_error'
+                    if mean_key in results[dataset]['summary']:
+                        values.append(results[dataset]['summary'][mean_key])
+                        error_bars.append(results[dataset]['summary'].get(std_error_key, 0))
+                    else:
+                        values.append(0)
+                        error_bars.append(0)
+            else:
+                # Fallback: calculate from individual results
+                dataset_groups = {}
+                for filename, file_results in results.items():
+                    dataset_name = filename.split('_')[0] if '_' in filename else filename
+                    if dataset_name not in dataset_groups:
+                        dataset_groups[dataset_name] = []
+                    dataset_groups[dataset_name].append(file_results)
                 
-                offset = (i - len(results)/2 + 0.5) * width
-                bars = ax.bar(x + offset, values, width, label=dataset, alpha=0.8)
+                for dataset in sorted(dataset_groups.keys()):
+                    metric_values = []
+                    for file_results in dataset_groups[dataset]:
+                        if metric_key in file_results:
+                            metric_values.append(file_results[metric_key])
+                    
+                    if metric_values:
+                        values.append(np.mean(metric_values))
+                        error_bars.append(np.std(metric_values) / np.sqrt(len(metric_values)-1) if len(metric_values) > 1 else 0)
+                    else:
+                        values.append(0)
+                        error_bars.append(0)
+            
+            colors = [self.get_dataset_color(ds) for ds in datasets]
+            bars = ax.bar(range(len(datasets)), values, color=colors, alpha=0.8, 
+                         yerr=error_bars, capsize=5)
+            
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.set_ylabel(metric_key.replace('_', ' ').title())
+            ax.set_xticks([])
+            if y_min is not None and y_max is not None:
+                ax.set_ylim(y_min, y_max)
+            elif y_min is not None:
+                ax.set_ylim(bottom=y_min)
+            
+            # Add chance performance lines and maximum value lines
+            if 'boundary' not in metric_key.lower():
+                chance_values = [chance_metrics.get(ds, {}).get(metric_key, 0) for ds in datasets]
+                max_values_list = [max_values.get(ds, {}).get(metric_key, 0) for ds in datasets]
                 
-                # Add value labels for small datasets
-                if len(results) <= 3 and metric != 'support':
-                    for bar, val in zip(bars, values):
-                        if val > 0:
-                            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                                   f'{val:.2f}', ha='center', va='bottom', fontsize=8)
+                for i, (bar, chance_val, max_val) in enumerate(zip(bars, chance_values, max_values_list)):
+                    # Add chance performance line
+                    if not metric_key.startswith('boundary'):
+                        ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                               [chance_val, chance_val], 
+                               color='red', linewidth=3, alpha=0.9,
+                               label='Chance Performance' if i == 0 and idx == 0 else None)
+                    # Add maximum value line for mutual info and MCC
+                    if metric_key == 'mutual_info_gt_vs_pred' and max_val > 0:
+                        ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                               [max_val, max_val], 
+                               color='green', linewidth=3, alpha=0.8, linestyle='--',
+                               label='Max Possible' if i == 0 and idx == 3 else None)
+                    elif metric_key == 'MCC':
+                        ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                               [1.0, 1.0], 
+                               color='green', linewidth=3, alpha=0.8, linestyle='--',
+                               label='Max Possible' if i == 0 and idx == 3 else None)
             
-            ax.set_xlabel('Behavior Class', fontsize=12)
-            ax.set_ylabel(title, fontsize=12)
-            ax.set_title(f'Per-Class {title}', fontsize=14, fontweight='bold')
-            ax.set_xticks(x)
-            ax.set_xticklabels(all_behaviors, rotation=45, ha='right')
-            
-            if metric != 'support':
-                ax.set_ylim(0, 1)
-            
-            # Only show legend on the last subplot
-            if idx == len(metrics) - 1:
-                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            ax.grid(True, alpha=0.3)
+            # Add value labels on bars
+            for bar, val in zip(bars, values):
+                label = f'{val:.3f}'
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(values) * 0.01 if values else 0.01), 
+                       label, ha='center', va='bottom', fontweight='bold')
         
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'per_class_performance.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'per_class_performance.pdf', bbox_inches='tight')
+        # Hide any extra subplots
+        for i in range(len(metrics), len(axes)):
+            axes[i].set_visible(False)
+        
+        # Create legend - collect handles from all subplots
+        dataset_legend_handles = [Patch(facecolor=self.get_dataset_color(ds), label=ds) for ds in datasets]
+        
+        # Collect all handles and labels from all subplots
+        all_handles = []
+        all_labels = []
+        seen_labels = set()
+        
+        for ax in axes:
+            if ax.get_visible():  # Only process visible subplots
+                handles, labels = ax.get_legend_handles_labels()
+                for handle, label in zip(handles, labels):
+                    if label not in seen_labels:
+                        all_handles.append(handle)
+                        all_labels.append(label)
+                        seen_labels.add(label)
+        
+        # Combine dataset handles with other handles
+        all_handles = dataset_legend_handles + all_handles
+        all_labels = datasets + all_labels
+        
+        if all_handles:
+            # Place legend below in center as single row
+            fig.legend(all_handles, all_labels, loc='lower center', bbox_to_anchor=(0.5, 0.02), 
+                      fontsize=16, ncol=len(all_handles))
+        
+        if plot_title:
+            fig.suptitle(plot_title, fontsize=24, fontweight='bold')
+        
+        # Adjust layout to accommodate legend below
+        plt.tight_layout(rect=[0, 0.08, 1, 0.97] if plot_title else [0, 0.08, 1, 1])
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_dir / 'core_metrics_comparison.png', dpi=300, bbox_inches='tight')
+        plt.savefig(output_dir / 'core_metrics_comparison.pdf', bbox_inches='tight')
         plt.close()
-    
-    def plot_duration_analysis(self, results: Dict[str, Dict]):
-        """Plot duration analysis comparison."""
-        # Collect all behaviors
-        all_behaviors = set()
-        for data in results.values():
-            if 'duration_analysis' in data:
-                all_behaviors.update(data['duration_analysis'].keys())
-        
-        all_behaviors = sorted(list(all_behaviors))
-        
-        if not all_behaviors:
-            print("No duration analysis found for visualization")
-            return
-        
-        # Create plots for duration bias and mean durations
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12))
-        
-        # Duration Bias Plot
-        x = np.arange(len(all_behaviors))
-        width = 0.8 / len(results)
-        
-        for i, (dataset, data) in enumerate(results.items()):
-            biases = []
-            for behavior in all_behaviors:
-                duration_data = data.get('duration_analysis', {}).get(behavior, {})
-                biases.append(duration_data.get('duration_bias', 0))
-            
-            offset = (i - len(results)/2 + 0.5) * width
-            bars = ax1.bar(x + offset, biases, width, label=dataset, alpha=0.8)
-            
-            # Add value labels
-            for bar, bias in zip(bars, biases):
-                if abs(bias) > 0.1:  # Only label significant biases
-                    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (0.1 if bias > 0 else -0.1), 
-                            f'{bias:+.1f}s', ha='center', va='bottom' if bias > 0 else 'top', fontsize=8)
-        
-        ax1.axhline(y=0, color='black', linestyle='--', alpha=0.5)
-        ax1.set_xlabel('Behavior Class', fontsize=12)
-        ax1.set_ylabel('Duration Bias (seconds)', fontsize=12)
-        ax1.set_title('Duration Bias by Behavior (Predicted - Ground Truth)', fontsize=14, fontweight='bold')
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(all_behaviors, rotation=45, ha='right')
-        ax1.grid(True, alpha=0.3)
-        
-        # Mean Duration Comparison
-        for i, (dataset, data) in enumerate(results.items()):
-            gt_means = []
-            pred_means = []
-            
-            for behavior in all_behaviors:
-                duration_data = data.get('duration_analysis', {}).get(behavior, {})
-                gt_means.append(duration_data.get('gt_mean', 0))
-                pred_means.append(duration_data.get('pred_mean', 0))
-            
-            offset = (i - len(results)/2 + 0.5) * width
-            ax2.bar(x + offset - width/4, gt_means, width/2, label=f'{dataset} (GT)', alpha=0.6)
-            ax2.bar(x + offset + width/4, pred_means, width/2, label=f'{dataset} (Pred)', alpha=0.8)
-        
-        ax2.set_xlabel('Behavior Class', fontsize=12)
-        ax2.set_ylabel('Mean Duration (seconds)', fontsize=12)
-        ax2.set_title('Mean Duration Comparison: Ground Truth vs Predictions', fontsize=14, fontweight='bold')
-        ax2.set_xticks(x)
-        ax2.set_xticklabels(all_behaviors, rotation=45, ha='right')
-        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'duration_analysis.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'duration_analysis.pdf', bbox_inches='tight')
-        plt.close()
-    
-    def plot_segmentation_quality(self, results: Dict[str, Dict]):
-        """Plot segmentation quality metrics."""
-        datasets = list(results.keys())
-        
-        over_seg_errors = [results[ds].get('over_segmentation_error', 0) for ds in datasets]
-        under_seg_errors = [results[ds].get('under_segmentation_error', 0) for ds in datasets]
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-        
-        # Over-segmentation errors
-        bars1 = ax1.bar(datasets, over_seg_errors, color=sns.color_palette("Reds_r", len(datasets)), alpha=0.8)
-        ax1.set_title('Over-segmentation Error', fontsize=14, fontweight='bold')
-        ax1.set_ylabel('Error Rate')
-        ax1.set_ylim(0, max(max(over_seg_errors), max(under_seg_errors)) * 1.1)
-        ax1.tick_params(axis='x', rotation=45)
-        
-        for bar, error in zip(bars1, over_seg_errors):
-            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                    f'{error:.3f}', ha='center', va='bottom', fontweight='bold')
-        
-        # Under-segmentation errors
-        bars2 = ax2.bar(datasets, under_seg_errors, color=sns.color_palette("Blues_r", len(datasets)), alpha=0.8)
-        ax2.set_title('Under-segmentation Error', fontsize=14, fontweight='bold')
-        ax2.set_ylabel('Error Rate')
-        ax2.set_ylim(0, max(max(over_seg_errors), max(under_seg_errors)) * 1.1)
-        ax2.tick_params(axis='x', rotation=45)
-        
-        for bar, error in zip(bars2, under_seg_errors):
-            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                    f'{error:.3f}', ha='center', va='bottom', fontweight='bold')
-        
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'segmentation_quality.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'segmentation_quality.pdf', bbox_inches='tight')
-        plt.close()
-    
-    def create_summary_table(self, results: Dict[str, Dict]):
-        """Create a comprehensive summary table."""
-        summary_data = []
-        
-        for dataset, data in results.items():
-            row = {
-                'Dataset': dataset,
-                'Second Accuracy': f"{data.get('second_accuracy', 0):.4f}",
-                'mAP': f"{data.get('mAP', 0):.4f}",
-                'Edit Distance': data.get('edit_distance', 0),
-                'Boundary F1 (±1s)': f"{data.get('boundary_f1', 0):.4f}",
-                'IoU@0.5 F1': f"{data.get('iou_0.5_f1', 0):.4f}",
-                'Over-seg Error': f"{data.get('over_segmentation_error', 0):.4f}",
-                'Under-seg Error': f"{data.get('under_segmentation_error', 0):.4f}",
-                'Total Seconds': data.get('total_seconds', 0)
-            }
-            summary_data.append(row)
-        
-        # Create table plot
-        fig, ax = plt.subplots(figsize=(16, max(6, len(summary_data) * 0.5)))
-        ax.axis('tight')
-        ax.axis('off')
-        
-        # Create table
-        df = pd.DataFrame(summary_data)
-        table = ax.table(cellText=df.values, colLabels=df.columns, 
-                        cellLoc='center', loc='center', bbox=[0, 0, 1, 1])
-        
-        # Style the table
-        table.auto_set_font_size(False)
-        table.set_fontsize(9)
-        table.scale(1.2, 2)
-        
-        # Color header
-        for i in range(len(df.columns)):
-            table[(0, i)].set_facecolor('#4CAF50')
-            table[(0, i)].set_text_props(weight='bold', color='white')
-        
-        # Alternate row colors
-        for i in range(1, len(df) + 1):
-            for j in range(len(df.columns)):
-                if i % 2 == 0:
-                    table[(i, j)].set_facecolor('#f0f0f0')
-        
-        plt.title('Evaluation Summary Table', fontsize=16, fontweight='bold', pad=20)
-        plt.savefig(self.output_dir / 'summary_table.png', dpi=300, bbox_inches='tight')
-        plt.savefig(self.output_dir / 'summary_table.pdf', bbox_inches='tight')
-        plt.close()
-        
-        # Also save as CSV
-        df.to_csv(self.output_dir / 'summary_table.csv', index=False)
-    
+
     def generate_all_plots(self, results_dir: Path):
-        """Generate all comparative visualizations."""
         print(f"🔍 Scanning for results in: {results_dir}")
         results = self.collect_results(results_dir)
-        
         if not results:
             print("❌ No evaluation results found!")
             return
-        
         print(f"📊 Found {len(results)} datasets: {list(results.keys())}")
+        
+        # Debug: print what we found
+        for dataset_name, dataset_data in results.items():
+            print(f"  Dataset: {dataset_name}")
+            if 'summary' in dataset_data:
+                print(f"    Has summary with keys: {list(dataset_data['summary'].keys())[:5]}...")
+            else:
+                print(f"    No summary found")
+        
         print(f"📈 Generating visualizations in: {self.output_dir}")
         
-        # Generate all plots
-        self.plot_core_metrics_comparison(results)
-        print("✅ Core metrics comparison")
+        # Create a comparison plot across all datasets
+        if any('summary' in data for data in results.values()):
+            print(f"📊 Creating comparison plot across all datasets")
+            
+            # Create the comparison plot
+            comparison_dir = self.output_dir / 'comparison'
+            self.plot_core_metrics_comparison(
+                results, 
+                comparison_dir, 
+                plot_title='Core Metrics Comparison Across Datasets'
+            )
+            print(f"✅ Comparison plot saved to: {comparison_dir}")
+        else:
+            print(f"⚠️  No summary data found in any dataset")
         
-        self.plot_boundary_tolerance_analysis(results)
-        print("✅ Boundary tolerance analysis")
+        # # Create individual file plots for each dataset
+        # print(f"📊 Creating individual file plots for each dataset")
+        # self.plot_individual_files(results, self.output_dir)
         
-        self.plot_iou_threshold_analysis(results)
-        print("✅ IoU threshold analysis")
-        
-        self.plot_per_class_performance(results)
-        print("✅ Per-class performance")
-        
-        self.plot_duration_analysis(results)
-        print("✅ Duration analysis")
-        
-        self.plot_segmentation_quality(results)
-        print("✅ Segmentation quality")
-        
-        self.create_summary_table(results)
-        print("✅ Summary table")
-        
-        print(f"\n🎉 All visualizations saved to: {self.output_dir}")
-        print("📁 Generated files:")
-        for file in sorted(self.output_dir.glob("*")):
-            print(f"   - {file.name}")
+        # print(f"\n🎉 All visualizations saved to: {self.output_dir}")
+        # print("📁 Generated files:")
+        # for file in sorted(self.output_dir.rglob("*.png")):
+        #     print(f"   - {file.relative_to(self.output_dir)}")
+
+    def plot_individual_files(self, results: Dict[str, Dict], output_dir: Path):
+        """Create individual plots for each file within each dataset."""
+        for dataset_name, dataset_data in results.items():
+            if 'files' not in dataset_data:
+                continue
+                
+            print(f"📊 Creating individual file plots for dataset: {dataset_name}")
+            
+            # Create directory for this dataset
+            dataset_dir = output_dir / 'individual_files' / dataset_name
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Calculate chance performance and max values for this dataset
+            chance_metrics = self.calculate_chance_performance({dataset_name: dataset_data})
+            max_values = self.calculate_maximum_values({dataset_name: dataset_data})
+            
+            # Get all files for this dataset
+            files = list(dataset_data['files'].keys())
+            
+            # Define metrics to plot
+            metrics = [
+                ('second_accuracy', 'Second-wise Accuracy', 0, 1),
+                ('macro_f1', 'Macro F1 (Unweighted)', 0, 1),
+                ('mAP', 'mean Average Precision (mAP)', 0, 1),
+                ('mutual_info_gt_vs_pred', 'Mutual Info (GT vs Pred)', 0, 1),
+                ('MCC', 'Matthew\'s Correlation Coefficient (MCC)', -1, 1),
+            ]
+            
+            # Create figure for individual file plots
+            fig, axes = plt.subplots(1, 5, figsize=(28, 12))
+            axes = axes.flatten()
+            
+            for idx, (metric_key, title, y_min, y_max) in enumerate(metrics):
+                ax = axes[idx]
+                
+                # Extract values for this metric from all files
+                values = []
+                for filename in files:
+                    file_data = dataset_data['files'][filename]
+                    value = file_data.get(metric_key, 0)
+                    values.append(value)
+                
+                # Create bars for each file
+                colors = sns.color_palette("husl", len(files))
+                bars = ax.bar(range(len(files)), values, color=colors, alpha=0.8)
+                
+                ax.set_title(f'{title} - {dataset_name}', fontsize=14, fontweight='bold')
+                ax.set_ylabel(metric_key.replace('_', ' ').title())
+                ax.set_xticks(range(len(files)))
+                ax.set_xticklabels([f.split('_')[-1] if '_' in f else f for f in files], 
+                                 rotation=45, ha='right')
+                
+                if y_min is not None and y_max is not None:
+                    ax.set_ylim(y_min, y_max)
+                elif y_min is not None:
+                    ax.set_ylim(bottom=y_min)
+                
+                # Add chance performance and maximum value lines
+                if 'boundary' not in metric_key.lower():
+                    # Calculate chance performance for this specific file
+                    file_chance_vals = []
+                    file_max_vals = []
+                    
+                    for filename in files:
+                        file_data = dataset_data['files'][filename]
+                        temporal_coverage = file_data.get('temporal_coverage', {})
+                        
+                        if temporal_coverage:
+                            total_duration = sum(coverage.get('gt_duration', 0) for coverage in temporal_coverage.values())
+                            class_proportions = []
+                            
+                            for behavior, coverage in temporal_coverage.items():
+                                if total_duration > 0:
+                                    proportion = coverage.get('gt_duration', 0) / total_duration
+                                    if proportion > 0:
+                                        class_proportions.append(proportion)
+                            
+                            if class_proportions:
+                                # Normalize proportions to sum to 1.0
+                                total_proportion = sum(class_proportions)
+                                if total_proportion > 0:
+                                    class_proportions = [p / total_proportion for p in class_proportions]
+                                
+                                # Calculate chance performance for this file
+                                if metric_key == 'second_accuracy':
+                                    chance_val = sum(p * p for p in class_proportions)
+                                elif metric_key == 'macro_f1':
+                                    # For random classifier, macro F1 = average of class proportions
+                                    # (precision = recall = class proportion for each class)
+                                    chance_val = np.mean(class_proportions)
+                                elif metric_key == 'weighted_f1':
+                                    chance_val = sum(p * p for p in class_proportions)
+                                elif metric_key == 'mAP':
+                                    # For random classifier, mAP = average of class proportions
+                                    chance_val = np.mean(class_proportions)
+                                else:
+                                    chance_val = 0
+                                
+                                # Calculate maximum mutual information for this file
+                                if metric_key == 'mutual_info_gt_vs_pred':
+                                    from collections import Counter
+                                    file_labels = []
+                                    for behavior, coverage in temporal_coverage.items():
+                                        gt_duration = coverage.get('gt_duration', 0)
+                                        if gt_duration > 0:
+                                            file_labels.extend([behavior] * int(gt_duration))
+                                    
+                                    if file_labels:
+                                        label_counts = Counter(file_labels)
+                                        total_labels = len(file_labels)
+                                        entropy = 0
+                                        for count in label_counts.values():
+                                            p = count / total_labels
+                                            if p > 0:
+                                                entropy -= p * np.log2(p)
+                                        max_val = entropy
+                                    else:
+                                        max_val = 1.0
+                                elif metric_key == 'MCC':
+                                    max_val = 1.0
+                                else:
+                                    max_val = 0
+                            else:
+                                chance_val = 0
+                                max_val = 1.0 if metric_key in ['mutual_info_gt_vs_pred', 'MCC'] else 0
+                        else:
+                            chance_val = 0
+                            max_val = 1.0 if metric_key in ['mutual_info_gt_vs_pred', 'MCC'] else 0
+                        
+                        file_chance_vals.append(chance_val)
+                        file_max_vals.append(max_val)
+                    
+                    # Add chance performance lines for each file
+                    for i, (bar, chance_val) in enumerate(zip(bars, file_chance_vals)):
+                        if chance_val > 0 and not metric_key.startswith('boundary') and metric_key != 'mAP':
+                            ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                                   [chance_val, chance_val], 
+                                   color='red', linewidth=3, alpha=0.9,
+                                   label='Chance Performance' if i == 0 and idx == 0 else None)
+                        if metric_key == 'mutual_info_gt_vs_pred' or metric_key == 'mAP':
+                            ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                                   [0, 0], 
+                                   color='red', linewidth=3, alpha=0.9,
+                                   label='Chance Performance' if i == 0 and idx == 0 else None)
+                    
+                    # Add maximum value lines for each file
+                    for i, (bar, max_val) in enumerate(zip(bars, file_max_vals)):
+                        if metric_key == 'mutual_info_gt_vs_pred' and max_val > 0:
+                            ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                                   [max_val, max_val], 
+                                   color='green', linewidth=2, alpha=0.8, linestyle='--',
+                                   label='Max Possible' if i == 0 and idx == 3 else None)
+                        elif metric_key == 'MCC':
+                            ax.plot([bar.get_x(), bar.get_x() + bar.get_width()], 
+                                   [1.0, 1.0], 
+                                   color='green', linewidth=2, alpha=0.8, linestyle='--',
+                                   label='Max Possible' if i == 0 and idx == 4 else None)
+                
+                # Add value labels on bars
+                for bar, val in zip(bars, values):
+                    label = f'{val:.3f}'
+                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (max(values) * 0.01 if values else 0.01), 
+                           label, ha='center', va='bottom', fontweight='bold')
+            
+            # Hide any extra subplots
+            for i in range(len(metrics), len(axes)):
+                axes[i].set_visible(False)
+            
+            # Create legend - collect handles from all subplots
+            file_legend_handles = [Patch(facecolor=colors[i], label=files[i]) for i in range(len(files))]
+            
+            # Collect all handles and labels from all subplots
+            all_handles = []
+            all_labels = []
+            seen_labels = set()
+            
+            for ax in axes:
+                if ax.get_visible():  # Only process visible subplots
+                    handles, labels = ax.get_legend_handles_labels()
+                    for handle, label in zip(handles, labels):
+                        if label not in seen_labels:
+                            all_handles.append(handle)
+                            all_labels.append(label)
+                            seen_labels.add(label)
+            
+            # Combine file handles with other handles
+            all_handles = file_legend_handles + all_handles
+            all_labels = files + all_labels
+            
+            if all_handles:
+                fig.legend(all_handles, all_labels, loc='lower center', bbox_to_anchor=(0.5, 0.02), 
+                          fontsize=12, ncol=min(len(all_handles), 8))
+            
+            # Add title
+            fig.suptitle(f'Individual File Performance: {dataset_name}', fontsize=20, fontweight='bold')
+            
+            # Adjust layout
+            plt.tight_layout(rect=[0, 0.08, 1, 0.97])
+            
+            # Save plot
+            plt.savefig(dataset_dir / f'{dataset_name}_individual_files.png', dpi=300, bbox_inches='tight')
+            plt.savefig(dataset_dir / f'{dataset_name}_individual_files.pdf', bbox_inches='tight')
+            plt.close()
+            
+            print(f"✅ Individual file plots saved to: {dataset_dir}")
 
 def main():
     parser = argparse.ArgumentParser(description='Generate comparative visualizations for action segmentation evaluation')
     parser.add_argument('--results-dir', required=True, 
-                       help='Directory containing subdirectories with evaluation results')
+                       help='Directory containing subdirectories with evaluation_results.json files')
     parser.add_argument('--output-dir', default='./comparative_plots',
                        help='Directory to save plots (default: ./comparative_plots)')
-    
     args = parser.parse_args()
-    
-    # Create visualizer and generate plots
     visualizer = ComparativeVisualizer(args.output_dir)
     visualizer.generate_all_plots(Path(args.results_dir))
 

@@ -5,99 +5,139 @@ from pathlib import Path
 import tempfile
 from moviepy.editor import VideoFileClip
 import glob 
+import time
+import signal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from typing import List, Optional
+
+try:
+    from google.cloud import storage
+    GCS_AVAILABLE = True
+except ImportError:
+    GCS_AVAILABLE = False
+    print("Warning: google-cloud-storage not available. GCS directory listing will not work.")
 
 from src.models.mouse_behavior import MouseBehaviorSegment
 from src.utils.gemini_client import get_gemini_response
 from src.scoring.evaluator import score_predictions
 from src.config.prompts import PROMPTS
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Label mouse behavior using Gemini')
-    parser.add_argument('--video', required=True, help='Path to the video file')
-    parser.add_argument('--annotation', help='Path to the annotation JSON file')
-    parser.add_argument('--output-dir', default='./gemini_mouse_behavior_results',
-                      help='Directory to save results (default: ./gemini_mouse_behavior_results)')
-    parser.add_argument('--start-segment', type=int, default=0,
-                      help='Number of initial segments to use as context (default: 15)')
-    parser.add_argument('--max-duration', type=float, default=655,
-                      help='Maximum duration in seconds to process from the video (default: None)')
-    # parser.add_argument('--api-key', required=True,
-    #                   help='Google Cloud API key for Gemini')
-    parser.add_argument('--project',
-                      help='Google Cloud project')
-    parser.add_argument('--location', default='us-central1',
-                      help='Google Cloud location (default: us-central1)')
-    parser.add_argument('--model-id', default='gemini-2.0-flash-001',
-                      help='Gemini model ID (default: gemini-2.0-flash-001)')
-    parser.add_argument('--prompt-template',
-                      choices=list(PROMPTS.keys()),
-                      help='Prompt template to use (default: default)')
-    parser.add_argument('--full-example-annotation',
-                      help='Path to a fully annotated example JSON file to use as reference')
-    parser.add_argument('--full-example-video',
-                      help='Path to the video file corresponding to the fully annotated example')
-    return parser.parse_args()
+class TimeoutError(Exception):
+    """Custom timeout exception"""
+    pass
 
+def timeout_handler(signum, frame):
+    """Signal handler for timeout"""
+    raise TimeoutError("Operation timed out")
 
-def main():
-    args = parse_args()
+def process_single_video(video_path: str, args, output_dir: Path) -> bool:
+    """
+    Process a single video file with timeout and retry logic
     
-    # Create output directory
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    Args:
+        video_path: Path to the video file
+        args: Command line arguments
+        output_dir: Output directory for results
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    max_retries = args.max_retries
+    timeout_seconds = args.timeout
     
-    # Get base name for output files
-    # name after folder name
-    base_name = args.video.split("/")[-2] + "_" + args.video.split("/")[-1].split(".")[0]
+    for attempt in range(max_retries):
+        try:
+            print(f"\nProcessing {video_path} (attempt {attempt + 1}/{max_retries})")
+            
+            # Set up timeout
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(timeout_seconds)
+            
+            try:
+                # Process the video
+                result = process_video_file(video_path, args, output_dir)
+                signal.alarm(0)  # Cancel timeout
+                return result
+                
+            except TimeoutError:
+                signal.alarm(0)  # Cancel timeout
+                print(f"Timeout after {timeout_seconds} seconds for {video_path}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying... ({attempt + 1}/{max_retries})")
+                    time.sleep(5)  # Wait before retry
+                else:
+                    print(f"Failed to process {video_path} after {max_retries} attempts")
+                    return False
+                    
+            except Exception as e:
+                signal.alarm(0)  # Cancel timeout
+                print(f"Error processing {video_path}: {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying... ({attempt + 1}/{max_retries})")
+                    time.sleep(5)  # Wait before retry
+                else:
+                    print(f"Failed to process {video_path} after {max_retries} attempts")
+                    return False
+                    
+        except Exception as e:
+            print(f"Unexpected error processing {video_path}: {str(e)}")
+            return False
     
-    # Load annotation JSON
+    return False
+
+def process_video_file(video_path: str, args, output_dir: Path) -> bool:
+    """
+    Process a single video file (extracted from original main function)
+    
+    Args:
+        video_path: Path to the video file
+        args: Command line arguments
+        output_dir: Output directory for results
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Load annotation JSON if provided
+    annotation_data = None
+    annotation_summary = None
     if args.annotation:
         with open(args.annotation, "r") as f:
             annotation_data = json.load(f)
-            
-        # Prepare annotation summary    
         annotation_summary = json.dumps(annotation_data["segments"][:args.start_segment], indent=2)
-    else:
-        annotation_data = None
-        annotation_summary = None
+    
+    # Load full example annotation if provided
+    full_example_annotation = None
     if args.full_example_annotation:
         with open(args.full_example_annotation, "r") as f:
             full_example_annotation = json.load(f)
-            
         full_example_annotation = json.dumps(full_example_annotation["segments"], indent=2)
-    else:
-        full_example_annotation = None
     
+    # Load example clips
+    behaviour_clips_dir = "gs://videos_freezing_mice"
     example_clips = None
-    # if args.prompt_template == "scratching":
-    #     example_clips = {'scratching': []}
-    #     #load example clips as bytes
-    #     for clip in glob.glob(os.path.join('behavior_examples', 'scratching', '*.mp4')):
-    #         with open(clip, "rb") as f:
-    #             example_clips['scratching'].append(f.read())
-    # elif args.prompt_template == "grooming":
-    #     example_clips = {'grooming': []}
-    #     #load example clips as bytes
-    #     for clip in glob.glob(os.path.join('behavior_examples', 'grooming', '*.mp4')):
-    #         with open(clip, "rb") as f:
-    #             example_clips['grooming'].append(f.read())
-    # elif args.prompt_template == "calms":
-    #     example_clips = {'attack': [], 'investigation': [], 'mount': []}
-    #     #load example clips as bytes
-    #     for folder in ['attack', 'investigation', 'mount']:
-    #         for clip in glob.glob(os.path.join('behavior_examples', folder, '*.mp4')):
-    #             with open(clip, "rb") as f:
-    #                 example_clips[folder].append(f.read())
-    # else:
-    #     example_clips = None
-    
-    
-    
+    if args.example_clips:
+        if args.prompt_template == "scratch_aid":
+            example_clips = {'scratch_aid': []}
+            for clip in glob.glob(os.path.join(args.example_clips, 'scratching', '*.mp4')):
+                example_clips['scratch_aid'].append(f"{behaviour_clips_dir}/{clip}")
+        elif args.prompt_template == "grooming":
+            example_clips = {'grooming': []}
+            for clip in glob.glob(os.path.join(args.example_clips, 'grooming', '*.mp4')):
+                example_clips['grooming'].append(f"{behaviour_clips_dir}/{clip}")
+        elif args.prompt_template == "calms":
+            example_clips = {'attack': [], 'investigation': [], 'mount': []}
+            for folder in ['attack', 'investigation', 'mount']:
+                for clip in glob.glob(os.path.join(args.example_clips, folder, '*.mp4')):
+                    example_clips[folder].append(f"{behaviour_clips_dir}/{clip}")
+        elif args.prompt_template == "mouse_box":
+            example_clips = {'bedding box': []}
+            for clip in glob.glob(os.path.join(args.example_clips, 'bedding box', '*.mp4')):
+                example_clips['bedding box'].append(f"{behaviour_clips_dir}/{clip}")
     
     # Get Gemini response
-    print("\nCalling Gemini API...")
+    print(f"Calling Gemini API for {video_path}...")
     
-    video_uri = args.video
+    video_uri = video_path
     full_example_video_uri = args.full_example_video
     
     response = get_gemini_response(
@@ -114,47 +154,205 @@ def main():
     )
     
     if response is None:
-        print("Error: Failed to get response from Gemini API")
-        return
+        print(f"Error: Failed to get response from Gemini API for {video_path}")
+        return False
         
-    print("\nProcessing Gemini response...")
+    print(f"Processing Gemini response for {video_path}...")
+    
     try:
-        
         # Try to get parsed output first
         model_outputs = response.parsed
         
-        
         if not model_outputs:
-            print("Error: No valid segments found in response")
+            print(f"Error: No valid segments found in response for {video_path}")
             print(response.text)
             print("Number of Tokens: ", response.usage_metadata.total_token_count)
-            return
-            #trying to parse up to last valid segment from the text
-            #model_outputs = parse_model_outputs(response.text)
+            return False
             
-        print(f"Successfully processed {len(model_outputs)} segments")
+        print(f"Successfully processed {len(model_outputs)} segments for {video_path}")
         
-        output_path = output_dir / f"{base_name}_gemini_segments_{args.model_id}.json"
+        # Generate output filename
+        base_name = f"{Path(video_path).stem}"
+        output_path = output_dir / f"{base_name}_{args.model_id}.json"
+        
         with open(output_path, "w") as out_f:
             json.dump([seg.model_dump() for seg in model_outputs], out_f, indent=2)
         print(f"Wrote Gemini output to {output_path}")
+        
+        return True
+        
     except Exception as e:
-        print(f"Error processing Gemini response: {str(e)}")
+        print(f"Error processing Gemini response for {video_path}: {str(e)}")
         print(f"Raw response: {response}")
+        return False
+
+def get_video_files(input_path: str) -> List[str]:
+    """
+    Get list of video files from input path (file or directory)
+    Supports both local paths and Google Cloud Storage paths
+    
+    Args:
+        input_path: Path to file or directory (local or GCS)
+        
+    Returns:
+        List of video file paths
+    """
+    video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
+    
+    # Check if it's a Google Cloud Storage path
+    if input_path.startswith('gs://'):
+        return get_gcs_video_files(input_path, video_extensions)
+    
+    # Local file system
+    if os.path.isfile(input_path):
+        # Single file
+        if Path(input_path).suffix.lower() in video_extensions:
+            return [input_path]
+        else:
+            print(f"Warning: {input_path} is not a video file")
+            return []
+    elif os.path.isdir(input_path):
+        # Directory - find all video files
+        video_files = []
+        for ext in video_extensions:
+            video_files.extend(glob.glob(os.path.join(input_path, f"*{ext}")))
+            video_files.extend(glob.glob(os.path.join(input_path, f"*{ext.upper()}")))
+        return sorted(video_files)
+    else:
+        print(f"Error: {input_path} is not a valid file or directory")
+        return []
+
+def get_gcs_video_files(gcs_path: str, video_extensions: set) -> List[str]:
+    """
+    Get video files from Google Cloud Storage path
+    
+    Args:
+        gcs_path: GCS path (gs://bucket/path)
+        video_extensions: Set of video file extensions
+        
+    Returns:
+        List of GCS video file paths
+    """
+    if not GCS_AVAILABLE:
+        print("Error: google-cloud-storage library not available")
+        return []
+    
+    # Parse GCS path
+    if not gcs_path.startswith('gs://'):
+        print(f"Error: {gcs_path} is not a valid GCS path")
+        return []
+    
+    # Remove gs:// prefix
+    path_without_prefix = gcs_path[5:]
+    
+    # Split into bucket and prefix
+    if '/' in path_without_prefix:
+        bucket_name, prefix = path_without_prefix.split('/', 1)
+        # Ensure prefix ends with / for directory listing
+        if not prefix.endswith('/'):
+            prefix += '/'
+    else:
+        bucket_name = path_without_prefix
+        prefix = ''
+    
+    try:
+        # Initialize GCS client
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        
+        # List blobs in the bucket with the given prefix
+        blobs = bucket.list_blobs(prefix=prefix)
+        
+        video_files = []
+        for blob in blobs:
+            # Check if the blob name ends with a video extension
+            if any(blob.name.lower().endswith(ext) for ext in video_extensions):
+                video_files.append(f"gs://{bucket_name}/{blob.name}")
+        
+        return sorted(video_files)
+        
+    except Exception as e:
+        print(f"Error listing GCS files: {str(e)}")
+        return []
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Label mouse behavior using Gemini')
+    parser.add_argument('--input', required=True, 
+                      help='Path to video file or directory containing video files')
+    parser.add_argument('--annotation', help='Path to the annotation JSON file')
+    parser.add_argument('--output-dir', default='./results',
+                      help='Directory to save results (default: ./results)')
+    parser.add_argument('--start-segment', type=int, default=0,
+                      help='Number of initial segments to use as context (default: 0)')
+    parser.add_argument('--max-duration', type=float, default=655,
+                      help='Maximum duration in seconds to process from the video (default: 655)')
+    parser.add_argument('--project',
+                      help='Google Cloud project')
+    parser.add_argument('--location', default='us-central1',
+                      help='Google Cloud location (default: us-central1)')
+    parser.add_argument('--model-id', default='gemini-2.0-flash-001',
+                      help='Gemini model ID (default: gemini-2.0-flash-001)')
+    parser.add_argument('--prompt-template',
+                      choices=list(PROMPTS.keys()),
+                      help='Prompt template to use (default: default)')
+    parser.add_argument('--full-example-annotation',
+                      help='Path to a fully annotated example JSON file to use as reference')
+    parser.add_argument('--full-example-video',
+                      help='Path to the video file corresponding to the fully annotated example')
+    parser.add_argument('--example-clips',
+                      help='Path to the example clips to use as reference')
+    parser.add_argument('--timeout', type=int, default=600,
+                      help='Timeout in seconds for each video (default: 600)')
+    parser.add_argument('--max-retries', type=int, default=3,
+                      help='Maximum number of retries for failed videos (default: 3)')
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get list of video files to process
+    video_files = get_video_files(args.input)
+    
+    if not video_files:
+        print(f"No video files found in {args.input}")
         return
     
-    # # Score the predictions
-    # # Exclude the segments used as context
-    # test_annotations = annotation_data["segments"][args.start_segment:]
-    # scores = score_predictions(test_annotations, model_outputs)
+    print(f"Found {len(video_files)} video files to process:")
+    for video_file in video_files:
+        print(f"  - {video_file}")
     
+    # Process each video file
+    successful = 0
+    failed = 0
     
-    # # Save scores
-    # scores_path = output_dir / f"{base_name}_scores_{args.model_id}.json"
-    # with open(scores_path, "w") as f:
-    #     json.dump(scores, f, indent=2)
-    # print(f"\nSaved scores to {scores_path}")
+    for i, video_file in enumerate(video_files, 1):
+        print(f"\n{'='*60}")
+        print(f"Processing video {i}/{len(video_files)}: {video_file}")
+        print(f"{'='*60}")
+        
+        start_time = time.time()
+        if process_single_video(video_file, args, output_dir):
+            successful += 1
+            elapsed_time = time.time() - start_time
+            print(f"✓ Successfully processed {video_file} in {elapsed_time:.1f}s")
+        else:
+            failed += 1
+            elapsed_time = time.time() - start_time
+            print(f"✗ Failed to process {video_file} after {elapsed_time:.1f}s")
+    
+    # Print summary
+    print(f"\n{'='*60}")
+    print("PROCESSING SUMMARY")
+    print(f"{'='*60}")
+    print(f"Total videos: {len(video_files)}")
+    print(f"Successful: {successful}")
+    print(f"Failed: {failed}")
+    print(f"Success rate: {successful/len(video_files)*100:.1f}%")
+    print(f"Results saved to: {output_dir}")
 
 if __name__ == "__main__":
-    main() 
-    
+    main()
