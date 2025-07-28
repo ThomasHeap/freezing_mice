@@ -10,6 +10,7 @@ import signal
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import List, Optional
 
+
 try:
     from google.cloud import storage
     GCS_AVAILABLE = True
@@ -18,11 +19,9 @@ except ImportError:
     print("Warning: google-cloud-storage not available. GCS directory listing will not work.")
 
 from src.models.mouse_behavior import MouseBehaviorSegment
-from src.utils.gemini_client import get_gemini_response
 from src.scoring.evaluator import score_predictions
 from src.config.prompts import PROMPTS
-from google import genai
-from google.genai.types import CreateBatchJobConfig, HttpOptions, JobState
+from src.utils.qwen_client import get_qwen_response
 
 class TimeoutError(Exception):
     """Custom timeout exception"""
@@ -31,6 +30,8 @@ class TimeoutError(Exception):
 def timeout_handler(signum, frame):
     """Signal handler for timeout"""
     raise TimeoutError("Operation timed out")
+
+
 
 def process_single_video(video_path: str, args, output_dir: Path) -> bool:
     """
@@ -136,19 +137,15 @@ def process_video_file(video_path: str, args, output_dir: Path) -> bool:
             for clip in glob.glob(os.path.join(args.example_clips, 'bedding box', '*.mp4')):
                 example_clips['bedding box'].append(f"{behaviour_clips_dir}/{clip}")
     
-    # Get Gemini response
-    print(f"Calling Gemini API for {video_path}...")
+    # Get Qwen response
+    print(f"Calling Qwen API for {video_path}...")
     
-    video_uri = video_path
     full_example_video_uri = args.full_example_video
     
-    response = get_gemini_response(
-        video_uri, 
+    response = get_qwen_response(
+        video_path, 
         annotation_summary, 
         args.start_segment,
-        args.project,
-        args.location,
-        args.model_id,
         args.prompt_template,
         full_example_annotation,
         full_example_video_uri,
@@ -156,35 +153,61 @@ def process_video_file(video_path: str, args, output_dir: Path) -> bool:
     )
     
     if response is None:
-        print(f"Error: Failed to get response from Gemini API for {video_path}")
+        print(f"Error: Failed to get response from Qwen API for {video_path}")
         return False
         
-    print(f"Processing Gemini response for {video_path}...")
+    print(f"Processing Qwen response for {video_path}...")
     
     try:
-        # Try to get parsed output first
-        model_outputs = response.parsed
+        # Extract the response content
+        response_text = response.choices[0].message.content
         
-        if not model_outputs:
-            print(f"Error: No valid segments found in response for {video_path}")
-            print(response.text)
-            print("Number of Tokens: ", response.usage_metadata.total_token_count)
-            return False
+        # Try to parse the JSON response
+        try:
+            # Clean up the response text to extract JSON
+            response_text = response_text.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            try:
+                parsed_response = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON response for {video_path}: {str(e)}")
+                print(f"Raw response: {response_text}")
+                # Write the raw response to a .txt file for inspection
+                base_name = f"{Path(video_path).stem}"
+                error_path = output_dir / f"{base_name}_{args.model_id}_raw_response.txt"
+                with open(error_path, "w") as err_f:
+                    err_f.write(response_text)
+                print(f"Wrote raw response to {error_path} for manual inspection.")
+                return False
             
-        print(f"Successfully processed {len(model_outputs)} segments for {video_path}")
-        
-        # Generate output filename
-        base_name = f"{Path(video_path).stem}"
-        output_path = output_dir / f"{base_name}_{args.model_id}.json"
-        
-        with open(output_path, "w") as out_f:
-            json.dump([seg.model_dump() for seg in model_outputs], out_f, indent=2)
-        print(f"Wrote Gemini output to {output_path}")
-        
-        return True
+            if "segments" not in parsed_response:
+                print(f"Error: No segments found in response for {video_path}")
+                print(f"Response: {response_text}")
+                return False
+                
+            segments = parsed_response["segments"]
+            print(f"Successfully processed {len(segments)} segments for {video_path}")
+            
+            # Generate output filename
+            base_name = f"{Path(video_path).stem}"
+            output_path = output_dir / f"{base_name}.json"
+            
+            with open(output_path, "w") as out_f:
+                json.dump(segments, out_f, indent=2)
+            print(f"Wrote Qwen output to {output_path}")
+            
+            return True
+            
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON response for {video_path}: {str(e)}")
+            print(f"Raw response: {response_text}")
+            return False
         
     except Exception as e:
-        print(f"Error processing Gemini response for {video_path}: {str(e)}")
+        print(f"Error processing Qwen response for {video_path}: {str(e)}")
         print(f"Raw response: {response}")
         return False
 
@@ -278,7 +301,7 @@ def get_gcs_video_files(gcs_path: str, video_extensions: set) -> List[str]:
         return []
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Label mouse behavior using Gemini')
+    parser = argparse.ArgumentParser(description='Label mouse behavior using Qwen')
     parser.add_argument('--input', required=True, 
                       help='Path to video file or directory containing video files')
     parser.add_argument('--annotation', help='Path to the annotation JSON file')
@@ -288,12 +311,8 @@ def parse_args():
                       help='Number of initial segments to use as context (default: 0)')
     parser.add_argument('--max-duration', type=float, default=655,
                       help='Maximum duration in seconds to process from the video (default: 655)')
-    parser.add_argument('--project',
-                      help='Google Cloud project')
-    parser.add_argument('--location', default='us-central1',
-                      help='Google Cloud location (default: us-central1)')
-    parser.add_argument('--model-id', default='gemini-2.0-flash-001',
-                      help='Gemini model ID (default: gemini-2.0-flash-001)')
+    parser.add_argument('--model-id', default='qwen-vl-max',
+                      help='Qwen model ID (default: qwen-vl-max)')
     parser.add_argument('--prompt-template',
                       choices=list(PROMPTS.keys()),
                       help='Prompt template to use (default: default)')
@@ -307,121 +326,7 @@ def parse_args():
                       help='Timeout in seconds for each video (default: 600)')
     parser.add_argument('--max-retries', type=int, default=3,
                       help='Maximum number of retries for failed videos (default: 3)')
-    # Batch mode arguments
-    parser.add_argument('--batch', action='store_true', help='Run in Gemini batch mode')
-    parser.add_argument('--batch-jsonl', default='batch_input.jsonl', help='Path to save the batch JSONL file')
-    parser.add_argument('--output-gcs-uri', help='GCS URI to save batch results (required for batch mode)')
     return parser.parse_args()
-
-# Batch helpers (implementations)
-def generate_batch_jsonl(video_files, args, jsonl_path):
-    """
-    Generate a JSONL file for batch processing. Each line contains a dict with a 'request' property as required by Gemini batch API.
-    """
-    # Get the prompt text from PROMPTS
-    prompt_text = PROMPTS[args.prompt_template]
-    with open(jsonl_path, 'w') as f:
-        for video_uri in video_files:
-            # Determine mimeType from file extension
-            if video_uri.lower().endswith('.mp4'):
-                mime_type = 'video/mp4'
-            elif video_uri.lower().endswith('.mov'):
-                mime_type = 'video/mov'
-            elif video_uri.lower().endswith('.avi'):
-                mime_type = 'video/avi'
-            elif video_uri.lower().endswith('.mkv'):
-                mime_type = 'video/x-matroska'
-            elif video_uri.lower().endswith('.webm'):
-                mime_type = 'video/webm'
-            elif video_uri.lower().endswith('.flv'):
-                mime_type = 'video/x-flv'
-            elif video_uri.lower().endswith('.wmv'):
-                mime_type = 'video/x-ms-wmv'
-            else:
-                mime_type = 'video/mp4'  # fallback
-            entry = {
-                "request": {
-                    "contents": [
-                        {
-                            "role": "user",
-                            "parts": [
-                                {"text": prompt_text},
-                                {"fileData": {"fileUri": video_uri, "mimeType": mime_type}}
-                            ]
-                        }
-                    ]
-                }
-            }
-            f.write(json.dumps(entry) + '\n')
-    print(f"Wrote batch JSONL to {jsonl_path}")
-
-def upload_to_gcs(local_path, gcs_uri):
-    """
-    Upload a file to GCS. gcs_uri should be like gs://bucket/path/to/file.jsonl
-    Returns the GCS URI of the uploaded file.
-    """
-    if not gcs_uri.startswith('gs://'):
-        raise ValueError('gcs_uri must start with gs://')
-    path_without_prefix = gcs_uri[5:]
-    bucket_name, blob_path = path_without_prefix.split('/', 1)
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
-    blob.upload_from_filename(local_path)
-    print(f"Uploaded {local_path} to {gcs_uri}")
-    return gcs_uri
-
-def submit_gemini_batch_job(model_id, input_jsonl_gcs_uri, output_gcs_uri, project, location):
-    """
-    Submit a Gemini batch job. Returns the job object.
-    """
-    client = genai.Client(
-        project=project,
-        location=location,
-        vertexai=True,
-        http_options=HttpOptions(api_version="v1")
-    )
-    job = client.batches.create(
-        model=model_id,
-        src=input_jsonl_gcs_uri,
-        config=CreateBatchJobConfig(dest=output_gcs_uri),
-    )
-    print(f"Job name: {job.name}")
-    print(f"Job state: {job.state}")
-    return job
-
-def monitor_batch_job(job, project, location):
-    """
-    Monitor the Gemini batch job until completion.
-    """
-    client = genai.Client(
-        project=project,
-        location=location,
-        vertexai=True,
-        http_options=HttpOptions(api_version="v1")
-    )
-    completed_states = {
-        JobState.JOB_STATE_SUCCEEDED,
-        JobState.JOB_STATE_FAILED,
-        JobState.JOB_STATE_CANCELLED,
-        JobState.JOB_STATE_PAUSED,
-    }
-    while job.state not in completed_states:
-        import time
-        time.sleep(30)
-        job = client.batches.get(name=job.name)
-        print(f"Job state: {job.state}")
-    print(f"Final job state: {job.state}")
-    # Print error details if failed
-    if job.state == JobState.JOB_STATE_FAILED:
-        if hasattr(job, 'error') and job.error:
-            print(f"Batch job error: {job.error}")
-        elif hasattr(job, 'error_message') and job.error_message:
-            print(f"Batch job error message: {job.error_message}")
-        elif hasattr(job, 'state_message') and job.state_message:
-            print(f"Batch job state message: {job.state_message}")
-        else:
-            print("Batch job failed, but no error details were found in the job object.")
 
 def main():
     args = parse_args()
@@ -440,25 +345,6 @@ def main():
     print(f"Found {len(video_files)} video files to process:")
     for video_file in video_files:
         print(f"  - {video_file}")
-    
-    if args.batch:
-        # --- Batch workflow ---
-        print("\nRunning in Gemini batch mode...")
-        if not args.output_gcs_uri:
-            print("Error: --output-gcs-uri is required in batch mode.")
-            return
-        # 1. Generate JSONL file
-        generate_batch_jsonl(video_files, args, args.batch_jsonl)
-        # 2. Upload JSONL to GCS (separate from output directory)
-        # Create input GCS URI by appending filename to a base input directory
-        input_gcs_uri = args.output_gcs_uri.replace('/batch_results/', '/batch_inputs/') + os.path.basename(args.batch_jsonl)
-        input_jsonl_gcs_uri = upload_to_gcs(args.batch_jsonl, input_gcs_uri)
-        # 3. Submit batch job
-        job = submit_gemini_batch_job(args.model_id, input_jsonl_gcs_uri, args.output_gcs_uri, args.project, args.location)
-        # 4. Monitor job
-        monitor_batch_job(job, args.project, args.location)
-        print("Batch job submitted and monitoring complete.")
-        return
     
     # Process each video file
     successful = 0
@@ -490,4 +376,4 @@ def main():
     print(f"Results saved to: {output_dir}")
 
 if __name__ == "__main__":
-    main()
+    main() 

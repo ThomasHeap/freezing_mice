@@ -2,7 +2,7 @@
 
 
 CALMS_PROMPT = """
-You are a Mouse Behavior Labeler specializing in CALMS (Comprehensive Analysis of Laboratory Mouse Social behavior).
+You are a Mouse Behavior Labeler specializing in mouse social behavior.
 Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
 
 Available behavior labels:
@@ -80,7 +80,9 @@ Your response must be in JSON format with the following structure:
 """
 
 MOUSE_BOX_PROMPT = """
-You are an expert in identifying mouse behavior.
+You are an expert in identifying mouse foraging behavior.
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
+
 
 Available behavior labels:
 - bedding box - when the mouse is interacting with the bedding box on the top right side of the video
@@ -120,6 +122,7 @@ Your response must be in JSON format with the following structure:
 
 GROOMING_PROMPT = """
 You are a Mouse Behavior Labeler specializing in identifying grooming behaviors in mice.
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
 The video shows a mouse from above.
 
 Available behavior labels:
@@ -163,6 +166,7 @@ Your response must be in JSON format with the following structure:
 
 FREEZING_PROMPT = """
 You are a Mouse Behavior Labeler specializing in identifying freezing behaviors in mice.
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
 The video shows a mouse from above.
 
 Available behavior labels:
@@ -201,8 +205,10 @@ Your response must be in JSON format with the following structure:
 
 FORAGING_PROMPT = """
 You are a Mouse Behavior Labeler specializing in identifying foraging behaviors in mice.
-The video the corner of a mouse box, the mouse visits the corner of the mouse box to forage.
-Foraging is characterized by the mouse actively extracting nesting material from the bedding box (the box with multiple holes filled with nesting material).
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
+The video is taken from in front of a mouse enclosure with a bedding box at the back.
+Foraging is characterized by the mouse actively extracting white nesting material from the bedding box (the box with multiple holes filled with white nesting material).
+The nesting material is white shreds of paper. Any other behavior is not foraging.
 
 Available behavior labels:
 - foraging - when the mouse is foraging, i.e. visiting the corner of the mouse box to forage
@@ -240,14 +246,57 @@ Your response must be in JSON format with the following structure:
 }
 """
 
-MOUSE_VENTRAL_PROMPT = """
-You are a Mouse Behavior Labeler specializing in identifying ventral behaviors in mice.
+MOUSE_VENTRAL2_PROMPT = """
+You are a Mouse Behavior Labeler specializing in identifying mouse behavior.
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
 The video shows a mouse from below.
 
 Available behavior labels:
 - background - when the mouse is not licking or scratching
-- scratch - when the mouse is scratching
-- lick - when the mouse is licking
+- scratch - when the mouse is scratching itself
+- lick - when the mouse is licking itself
+
+Important: 
+You must use ONLY the labels listed above. Do not create new labels or modify existing ones.
+
+Start your analysis from the start of the video and continue until the end of the video.
+
+For each segment, provide:
+- segment number (in order)
+- start and end time in MM:SS format
+- behavior label (must be one of the above labels)
+
+Your response must be in JSON format with the following structure:
+{
+    "segments": [
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        {
+            "segment_number": INTEGER,
+            "start_time": MM:SS,
+            "end_time": MM:SS,
+            "behavior": "behavior_label",
+        },
+        ...
+    ]
+}
+"""
+
+MOUSE_VENTRAL1_PROMPT = """
+You are a Mouse Behavior Labeler specializing in identifying mouse behavior.
+Your task is to analyze a video of mice and segment it into periods of distinct behaviors.
+The video shows a mouse from below.
+
+Available behavior labels:
+- groom - when the mouse is grooming itself
+- dig - when the mouse is digging
+- background - when the mouse is not licking or scratching
+- scratch - when the mouse is scratching itself
+- lick - when the mouse is licking itself
 
 Important: 
 You must use ONLY the labels listed above. Do not create new labels or modify existing ones.
@@ -286,5 +335,6 @@ PROMPTS = {
     "grooming": GROOMING_PROMPT,
     "freezing": FREEZING_PROMPT,
     "foraging": FORAGING_PROMPT,
-    "mouse_ventral": MOUSE_VENTRAL_PROMPT,
+    "mouse_ventral2": MOUSE_VENTRAL2_PROMPT,
+    "mouse_ventral1": MOUSE_VENTRAL1_PROMPT,
 } 

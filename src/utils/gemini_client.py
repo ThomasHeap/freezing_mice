@@ -96,7 +96,7 @@ def get_gemini_response(video_uri, annotation_summary, start_segment, project, l
             schema = list[FreezingSegment]
         elif prompt_template == "foraging":
             schema = list[ForagingSegment]
-        elif prompt_template == "mouse_ventral":
+        elif prompt_template == "mouse_ventral1" or prompt_template == "mouse_ventral2":
             schema = list[MouseVentralSegment]
         else:
             raise ValueError(f"Invalid prompt template: {prompt_template}")

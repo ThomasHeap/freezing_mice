@@ -8,8 +8,17 @@ from dataclasses import dataclass
 from sklearn.metrics import mutual_info_score, matthews_corrcoef
 import glob
 import os
+import re
 
 from sklearn.preprocessing import LabelEncoder
+
+# Add GCS imports for batch result downloading
+try:
+    from google.cloud import storage
+    GCS_AVAILABLE = True
+except ImportError:
+    GCS_AVAILABLE = False
+    print("Warning: google-cloud-storage not available. Batch result downloading will not work.")
 
 @dataclass
 class Segment:
@@ -738,16 +747,11 @@ def find_matching_files(gt_dir: str, pred_dir: str) -> List[Tuple[str, str]]:
     
     # Get all JSON files in both directories
     gt_files = list(gt_path.glob("*.json"))
-    pred_files = list(pred_path.glob("*_gemini-2.5-pro.json"))
+    pred_files = list(pred_path.glob("*.json"))
     
     # Create a mapping of filenames to full paths
     gt_file_map = {f.stem: f for f in gt_files}
-    pred_file_map = {}
-    
-    # For prediction files, extract the base name (remove _gemini-2.5-pro suffix)
-    for f in pred_files:
-        base_name = f.stem.replace('_gemini-2.5-pro', '')
-        pred_file_map[base_name] = f
+    pred_file_map = {f.stem: f for f in pred_files}
     
     # Find matching pairs
     matching_pairs = []
@@ -910,6 +914,89 @@ def print_aggregated_results(aggregated_results: Dict):
             for behavior, coverage in results['temporal_coverage'].items():
                 print(f"    {behavior}: GT={coverage['gt_duration']:.1f}s, Pred={coverage['pred_duration']:.1f}s")
 
+def download_batch_results(gcs_output_dir: str, local_output_dir: str) -> bool:
+    """
+    Download all files from a GCS directory to a local directory.
+    
+    Args:
+        gcs_output_dir: GCS URI of the directory containing batch results
+        local_output_dir: Local directory to save the files
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not GCS_AVAILABLE:
+        print("Error: google-cloud-storage library not available")
+        return False
+        
+    print(f"Looking for files in GCS directory: {gcs_output_dir}")
+    if not gcs_output_dir.endswith('/'):
+        gcs_output_dir += '/'
+    if not os.path.exists(local_output_dir):
+        os.makedirs(local_output_dir, exist_ok=True)
+        
+    try:
+        client = storage.Client()
+        bucket_name, prefix = gcs_output_dir[5:].split('/', 1)
+        bucket = client.bucket(bucket_name)
+        blobs = bucket.list_blobs(prefix=prefix)
+        
+        file_count = 0
+        for blob in blobs:
+            # Only download files, not directories
+            if not blob.name.endswith('/'):
+                file_count += 1
+                local_path = os.path.join(local_output_dir, os.path.basename(blob.name))
+                print(f"Downloading {blob.name} to {local_path}")
+                blob.download_to_filename(local_path)
+                
+        if file_count == 0:
+            print(f"No files found in {gcs_output_dir}")
+            return False
+        else:
+            print(f"Downloaded {file_count} files to {local_output_dir}")
+            return True
+            
+    except Exception as e:
+        print(f"Error downloading batch results: {str(e)}")
+        return False
+
+def split_jsonl_predictions(jsonl_path: str, output_dir: str):
+    """Split a .jsonl predictions file into per-video JSONs (old format)."""
+    os.makedirs(output_dir, exist_ok=True)
+    with open(jsonl_path, 'r') as f:
+        for line in f:
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            # Extract video filename
+            try:
+                file_uri = obj['request']['contents'][0]['parts'][1]['fileData']['fileUri']
+                # e.g. gs://videos_freezing_mice/calms/mouse003.mp4
+                video_name = os.path.splitext(os.path.basename(file_uri))[0]  # mouse003
+            except Exception as e:
+                print(f"Skipping line due to missing fileUri: {e}")
+                continue
+            # Extract segments JSON string
+            try:
+                text = obj['response']['candidates'][0]['content']['parts'][0]['text']
+                # Remove markdown code block if present
+                match = re.search(r'```json\n(.*)\n```', text, re.DOTALL)
+                if match:
+                    segments_json = match.group(1)
+                else:
+                    segments_json = text
+                segments_data = json.loads(segments_json)
+                segments = segments_data['segments'] if 'segments' in segments_data else segments_data
+            except Exception as e:
+                print(f"Skipping {video_name} due to segment parse error: {e}")
+                continue
+            # Write to file (list of segments, not wrapped in dict)
+            out_path = os.path.join(output_dir, f"{video_name}.json")
+            with open(out_path, 'w') as out_f:
+                json.dump(segments, out_f, indent=2)
+            print(f"Wrote {out_path}")
+
 def main():
     parser = argparse.ArgumentParser(description='Enhanced Action Segmentation Evaluation (Second-Level)')
     parser.add_argument('--ground-truth', required=True, 
@@ -924,51 +1011,100 @@ def main():
                        help='Temporal tolerance for boundary detection (seconds)')
     parser.add_argument('--single-file', action='store_true',
                        help='Treat inputs as single files instead of directories')
+    parser.add_argument('--download-batch-results', help='GCS URI to download batch results from (e.g., gs://bucket/batch_results/calms/)')
+    parser.add_argument('--batch-results-dir', help='Local directory to save downloaded batch results (defaults to --predictions if not specified)')
+    parser.add_argument('--split-jsonl', action='store_true', help='Split a .jsonl predictions file into per-video JSONs and exit')
     
     args = parser.parse_args()
     
     # Initialize evaluator
     evaluator = ActionSegmentationEvaluator(tolerance_seconds=args.tolerance)
     
+    # Download batch results if requested
+    if args.download_batch_results:
+        if not args.batch_results_dir:
+            args.batch_results_dir = args.predictions
+        print(f"Downloading batch results from {args.download_batch_results} to {args.batch_results_dir}")
+        if download_batch_results(args.download_batch_results, args.batch_results_dir):
+            print("Batch results downloaded successfully")
+            # Update predictions path to use downloaded results
+            args.predictions = args.batch_results_dir
+        else:
+            print("Failed to download batch results")
+            return 1
+    
+    if args.split_jsonl:
+        # If predictions is a .jsonl file, split it
+        if args.predictions.endswith('.jsonl'):
+            out_dir = os.path.join(os.path.dirname(args.predictions), 'split_predictions')
+            split_jsonl_predictions(args.predictions, out_dir)
+            print(f"\nAll files written to {out_dir}")
+        else:
+            print("--split-jsonl requires --predictions to be a .jsonl file")
+        return
+
+    # --- NEW: Auto-handle .jsonl predictions ---
+    predictions_path = args.predictions
+    
+    # Check if predictions_path is a directory that contains a .jsonl file
+    if os.path.isdir(predictions_path):
+        jsonl_files = [f for f in os.listdir(predictions_path) if f.endswith('.jsonl')]
+        if jsonl_files:
+            # Prioritize predictions.jsonl over chunked files
+            if 'predictions.jsonl' in jsonl_files:
+                jsonl_path = os.path.join(predictions_path, 'predictions.jsonl')
+            else:
+                # Use the first .jsonl file found
+                jsonl_path = os.path.join(predictions_path, jsonl_files[0])
+            split_dir = os.path.join(predictions_path, 'split_predictions')
+            # Only split if directory does not exist or is empty
+            if not os.path.exists(split_dir) or not os.listdir(split_dir):
+                print(f"Splitting {jsonl_path} to {split_dir}...")
+                split_jsonl_predictions(jsonl_path, split_dir)
+            else:
+                print(f"Using existing split predictions in {split_dir}")
+            predictions_path = split_dir
+    elif predictions_path.endswith('.jsonl'):
+        split_dir = os.path.join(os.path.dirname(predictions_path), 'split_predictions')
+        # Only split if directory does not exist or is empty
+        if not os.path.exists(split_dir) or not os.listdir(split_dir):
+            print(f"Splitting {predictions_path} to {split_dir}...")
+            split_jsonl_predictions(predictions_path, split_dir)
+        else:
+            print(f"Using existing split predictions in {split_dir}")
+        predictions_path = split_dir
+    # --- END NEW ---
+
     if args.single_file:
         # Single file evaluation (original behavior)
-        print(f"📁 Loading ground truth from: {args.ground_truth}")
+        print(f"\U0001F4C1 Loading ground truth from: {args.ground_truth}")
         gt_segments = load_segments_from_json(args.ground_truth, args.start_segment)
         print(f"✅ Loaded {len(gt_segments)} ground truth segments")
-        
-        print(f"📁 Loading predictions from: {args.predictions}")
-        pred_segments = load_segments_from_json(args.predictions)
+        print(f"\U0001F4C1 Loading predictions from: {predictions_path}")
+        pred_segments = load_segments_from_json(predictions_path)
         print(f"✅ Loaded {len(pred_segments)} predicted segments")
-        
         # Run evaluation
         print(f"\n🔄 Running comprehensive evaluation...")
         results = evaluator.evaluate_all(gt_segments, pred_segments)
-        
         # Print and save results
         output_path = Path(args.output_dir) / 'evaluation_results.json'
         evaluator.print_results(results, output_path)
-        
         print(f"\n🎉 Evaluation complete!")
         print(f"📊 Key metrics: Accuracy={results['second_accuracy']:.3f}, "
               f"Weighted F1={results['weighted_f1']:.3f}, mAP={results['mAP']:.3f}, "
               f"Mutual Info={results['mutual_info_gt_vs_pred']:.3f}, MCC={results['MCC']:.3f}")
-    
     else:
         # Directory evaluation (new behavior)
-        print(f"📁 Processing directories:")
+        print(f"\U0001F4C1 Processing directories:")
         print(f"  Ground truth: {args.ground_truth}")
-        print(f"  Predictions: {args.predictions}")
-        
+        print(f"  Predictions: {predictions_path}")
         # Find matching files
-        matching_pairs = find_matching_files(args.ground_truth, args.predictions)
-        
+        matching_pairs = find_matching_files(args.ground_truth, predictions_path)
         if not matching_pairs:
             print("❌ No matching files found in the directories!")
             print("Make sure both directories contain JSON files with matching names (excluding extension)")
             return
-        
         print(f"✅ Found {len(matching_pairs)} matching file pairs")
-        
         # Evaluate each pair
         all_results = []
         for gt_file, pred_file in matching_pairs:
@@ -978,47 +1114,37 @@ def main():
             except Exception as e:
                 print(f"❌ Error evaluating {Path(gt_file).name}: {e}")
                 continue
-        
         if not all_results:
             print("❌ No files were successfully evaluated!")
             return
-        
         # Aggregate results
         print(f"\n🔄 Aggregating results from {len(all_results)} files...")
         aggregated_results = aggregate_results(all_results)
-        
         # Print aggregated results
         print_aggregated_results(aggregated_results)
-        
         # Save results
         output_path = Path(args.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        
         # Save ground truth file paths for visualization in the output directory
         gt_file_paths = [gt for gt, _ in matching_pairs]
         gt_paths_file = output_path / 'gt_file_paths.json'
         with open(gt_paths_file, 'w') as f:
             json.dump(gt_file_paths, f, indent=2)
         print(f"\n💾 Saved ground truth file paths to: {gt_paths_file}")
-        
         # Save aggregated results
         aggregated_output = output_path / 'aggregated_results.json'
         with open(aggregated_output, 'w') as f:
             json.dump(aggregated_results, f, indent=2, default=str)
-        
         # Save individual results
         individual_output = output_path / 'individual_results'
         individual_output.mkdir(exist_ok=True)
-        
         for filename, results in all_results:
             file_output = individual_output / f'{filename}_results.json'
             with open(file_output, 'w') as f:
                 json.dump(results, f, indent=2, default=str)
-        
         print(f"\n💾 Results saved to:")
         print(f"  Aggregated: {aggregated_output}")
         print(f"  Individual: {individual_output}/")
-        
         print(f"\n🎉 Batch evaluation complete!")
         print(f"📊 Average metrics: Accuracy={aggregated_results['summary']['second_accuracy_mean']:.3f}, "
               f"F1={aggregated_results['summary']['weighted_f1_mean']:.3f}, "
